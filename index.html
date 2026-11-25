@@ -114,6 +114,7 @@ ol.board li .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 ol.board li .sc { font-weight: 900; }
 ol.board li.me { border-color: var(--blue); }
 ol.board li.empty { display: block; color: var(--muted); background: none; border: 0; }
+.note a { color: var(--blue); font-weight: 900; }
 ol.board li .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; border: 1.5px solid var(--ink); vertical-align: -1px; }
 .result .eyebrow { font: 900 13px var(--body); color: var(--muted); }
 .big { font: 400 clamp(48px, 14vw, 66px)/1 var(--display); color: var(--yellow); -webkit-text-stroke: 2.5px var(--ink); paint-order: stroke fill; text-shadow: 0 4px 0 var(--ink); font-variant-numeric: tabular-nums; }
@@ -1399,7 +1400,7 @@ function endGame(reason) {
   $('saveBtn').disabled = false;
   $('nameInput').value = lsGet('rd_name') || '';
   $('pad').hidden = true;
-  setTimeout(() => { $('hud').hidden = true; $('result').hidden = false; renderBoards(); }, 800);
+  setTimeout(() => { $('hud').hidden = true; $('result').hidden = false; if (ghMode) loadGitHub(); else renderBoards(); }, 800);
 }
 const STORY = [
   { t: '오늘은 등불 축제 날', x: (n) => `일 년에 딱 한 번, 마을 사람들이 서로에게 편지를 보내고 그 수만큼 <b>등불</b>을 밝히는 날이에요.`, art: 'lanterns' },
@@ -1435,7 +1436,7 @@ $('storyBtn').addEventListener('click', () => { Sound.init(); Sound.sfx('ui'); o
 $('startBtn').addEventListener('click', () => { Sound.init(); if (!lsGet('lr_story2')) openStory(true); else start(); });
 $('againBtn').addEventListener('click', start);
 $('homeBtn').addEventListener('click', () => { Sound.sfx('ui'); $('result').hidden = true; showTitle(true); });
-$('rankBtn').addEventListener('click', () => { Sound.init(); Sound.sfx('ui'); renderBoards(); $('rankModal').hidden = false; });
+$('rankBtn').addEventListener('click', () => { Sound.init(); Sound.sfx('ui'); if (ghMode) loadGitHub(); else renderBoards(); $('rankModal').hidden = false; });
 $('helpBtn').addEventListener('click', () => { Sound.init(); Sound.sfx('ui'); $('helpModal').hidden = false; });
 document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => { Sound.sfx('ui'); b.closest('.modal').hidden = true; }));
 document.querySelectorAll('.modal').forEach(m => m.addEventListener('pointerdown', (e) => { if (e.target === m && m.id !== 'result' && m.id !== 'storyModal') m.hidden = true; }));
@@ -1509,9 +1510,26 @@ $('snd').addEventListener('click', (e) => {
     try { localStorage.setItem('rd_board', JSON.stringify(rows)); } catch (e) {}
     boardRows = rows; renderBoards();
   }
+  // ---- GitHub leaderboard: read leaderboard.json, submit through a pre-filled issue ----
+  const GH_REPO = 'leewonyoungethan/subway-surfers', GH_SALT = 'LR-2026-lantern';
+  let ghMode = false;
+  function ghSign(str) { let h = 0x811c9dc5; for (const ch of str) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); }
+  async function loadGitHub() {
+    ghMode = true;
+    $('boardSrc1').textContent = '불러오는 중…';
+    try {
+      const r = await fetch(`https://raw.githubusercontent.com/${GH_REPO}/main/leaderboard.json?t=${Date.now()}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const data = await r.json();
+      boardRows = (Array.isArray(data) ? data : []).slice(0, 10).map(d => ({ id: 'gh:' + d.login, name: d.name, score: d.score, char: d.char }));
+      shared = true; renderBoards();
+    } catch (e) {
+      shared = false; loadLocal(); $('boardSrc1').textContent = '모두의 순위를 불러오지 못했어요 · 이 기기 기록';
+    }
+  }
   async function initShared() {
     const cl = window.claude;
-    if (!cl || !cl.use) { loadLocal(); return; }
+    if (!cl || !cl.use) { loadGitHub(); return; }
     try {
       db = await cl.use('db');
       const user = await cl.use('user');
@@ -1537,6 +1555,18 @@ $('snd').addEventListener('click', (e) => {
     try { localStorage.setItem('rd_name', name); } catch (e2) {}
     const note = $('saveNote');
     $('saveBtn').disabled = true;
+    if (ghMode) {
+      saveLocal(name, lastResult.score); saved = true;
+      const data = { name, score: lastResult.score, char: lastResult.char, map: mapId };
+      data.code = ghSign(`${name}|${data.score}|${data.char}|${data.map}|${GH_SALT}`);
+      const body = '아래 내용을 고치지 말고 그대로 제출하면 1~2분 안에 모두의 순위에 올라가요.\n\n```json\n' + JSON.stringify(data) + '\n```\n';
+      const url = `https://github.com/${GH_REPO}/issues/new?title=${encodeURIComponent(`[score] ${name} ${data.score}`)}&body=${encodeURIComponent(body)}`;
+      const w = window.open(url, '_blank', 'noopener');
+      note.className = 'note ok'; note.textContent = '';
+      note.append('GitHub 창에서 "Create" 버튼을 누르면 1~2분 뒤 모두의 순위에 올라가요 (GitHub 계정 필요). ');
+      if (!w) { const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '창이 안 열리면 여기를 눌러요'; note.append(a); }
+      return;
+    }
     if (!shared) {
       saveLocal(name, lastResult.score); saved = true;
       note.textContent = '이 기기 순위에 등록했어요.'; note.className = 'note ok'; return;

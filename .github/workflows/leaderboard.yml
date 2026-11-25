@@ -1,0 +1,54 @@
+name: Leaderboard
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: leaderboard
+  cancel-in-progress: false
+
+jobs:
+  add-score:
+    if: startsWith(github.event.issue.title, '[score]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Validate and record the score
+        id: rec
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = require('./.github/scripts/add-score.js');
+            await run({ context, core });
+
+      - name: Commit leaderboard
+        id: commit
+        if: steps.rec.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add leaderboard.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Update leaderboard"
+          git push
+
+      - name: Reply and close the issue
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          MSG: ${{ steps.rec.outputs.msg }}
+          COMMIT: ${{ steps.commit.outcome }}
+        with:
+          script: |
+            let body = process.env.MSG || '처리하는 중에 문제가 생겼어요.';
+            if (process.env.COMMIT === 'failure') body = '순위 파일을 저장하지 못했어요. 잠시 뒤 다시 등록해 주세요.';
+            await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body: body + '\n\n— 순위 등록 봇' });
+            await github.rest.issues.update({ ...context.repo, issue_number: context.issue.number, state: 'closed' });
