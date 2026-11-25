@@ -1,0 +1,32 @@
+name: Leaderboard setup
+
+# Creates the public score store once and saves its address in leaderboard-config.json.
+on: workflow_dispatch
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the score store
+        run: |
+          set -e
+          if [ -s leaderboard-config.json ]; then echo "Already set up:"; cat leaderboard-config.json; exit 0; fi
+          HDRS=$(curl -sS -D - -o /tmp/body -X POST -H 'Content-Type: application/json' -H 'Accept: application/json' -d '{"players":[]}' https://jsonblob.com/api/jsonBlob | tr -d '\r')
+          echo "$HDRS"
+          LOC=$(echo "$HDRS" | awk 'tolower($1)=="location:"{print $2}')
+          test -n "$LOC"
+          URL="https://jsonblob.com/api/jsonBlob/${LOC##*/}"
+          echo "store: $URL"
+          curl -sS "$URL"; echo
+          echo "--- CORS preflight check ---"
+          curl -sS -i -X OPTIONS -H 'Origin: https://leewonyoungethan.github.io' -H 'Access-Control-Request-Method: PUT' -H 'Access-Control-Request-Headers: content-type' "$URL" | tr -d '\r' | grep -i -E '^(HTTP|access-control)' || true
+          printf '{\n "url": "%s"\n}\n' "$URL" > leaderboard-config.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add leaderboard-config.json
+          git commit -m "Set up leaderboard store"
+          git push

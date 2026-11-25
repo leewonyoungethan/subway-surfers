@@ -1510,22 +1510,68 @@ $('snd').addEventListener('click', (e) => {
     try { localStorage.setItem('rd_board', JSON.stringify(rows)); } catch (e) {}
     boardRows = rows; renderBoards();
   }
-  // ---- GitHub leaderboard: read leaderboard.json, submit through a pre-filled issue ----
-  const GH_REPO = 'leewonyoungethan/subway-surfers', GH_SALT = 'LR-2026-lantern';
-  let ghMode = false;
+  // ---- public leaderboard: a no-sign-up JSON store (address in leaderboard-config.json), backed up to leaderboard.json by GitHub Actions ----
+  const GH_REPO = 'leewonyoungethan/subway-surfers', GH_SALT = 'LR-2026-lantern', RAW = `https://raw.githubusercontent.com/${GH_REPO}/main/`;
+  const PUB_CHARS = ['mint', 'sunny', 'coco', 'leo'], PUB_MAPS = ['dusk', 'neon', 'desert', 'snow', 'sakura'];
+  let ghMode = false, storeUrl = null;
   function ghSign(str) { let h = 0x811c9dc5; for (const ch of str) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); }
+  const rowCode = (r) => ghSign(`${r.id}|${r.name}|${r.score}|${r.char}|${r.map}|${GH_SALT}`);
+  const validRow = (r) => !!r && typeof r.id === 'string' && r.id.length <= 40 && typeof r.name === 'string' && r.name.length > 0 && r.name.length <= 12 &&
+    Number.isInteger(r.score) && r.score >= 0 && r.score <= 100000 && PUB_CHARS.includes(r.char) && PUB_MAPS.includes(r.map) && r.code === rowCode(r);
+  function playerId() {
+    let id = lsGet('lr_pid');
+    if (!id) { id = 'p' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); lsSet('lr_pid', id); }
+    return id;
+  }
+  function mergeRows(...lists) {
+    const best = new Map();
+    for (const list of lists) for (const r of list || []) { if (!validRow(r)) continue; const p = best.get(r.id); if (!p || r.score > p.score) best.set(r.id, r); }
+    return [...best.values()].sort((x, y) => y.score - x.score).slice(0, 100);
+  }
+  async function getStore() {
+    if (storeUrl) return storeUrl;
+    const r = await fetch(RAW + 'leaderboard-config.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('config ' + r.status);
+    storeUrl = (await r.json()).url; if (!storeUrl) throw new Error('no store');
+    return storeUrl;
+  }
+  async function readLive() {
+    const r = await fetch(await getStore(), { cache: 'no-store', headers: { Accept: 'application/json' } });
+    if (!r.ok) throw new Error('store ' + r.status);
+    const d = await r.json(); return Array.isArray(d.players) ? d.players : [];
+  }
+  async function readBackup() {
+    const r = await fetch(RAW + 'leaderboard.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('backup ' + r.status);
+    const d = await r.json(); return Array.isArray(d) ? d : [];
+  }
   async function loadGitHub() {
-    ghMode = true;
+    ghMode = true; myId = playerId();
     $('boardSrc1').textContent = '불러오는 중…';
-    try {
-      const r = await fetch(`https://raw.githubusercontent.com/${GH_REPO}/main/leaderboard.json?t=${Date.now()}`, { cache: 'no-store' });
-      if (!r.ok) throw new Error(r.status);
-      const data = await r.json();
-      boardRows = (Array.isArray(data) ? data : []).slice(0, 10).map(d => ({ id: 'gh:' + d.login, name: d.name, score: d.score, char: d.char }));
-      shared = true; renderBoards();
-    } catch (e) {
-      shared = false; loadLocal(); $('boardSrc1').textContent = '모두의 순위를 불러오지 못했어요 · 이 기기 기록';
+    let rows = null;
+    try { rows = mergeRows(await readLive()); } catch (e) { try { rows = mergeRows(await readBackup()); } catch (e2) {} }
+    if (!rows) { shared = false; loadLocal(); $('boardSrc1').textContent = '모두의 순위를 불러오지 못했어요 · 이 기기 기록'; return; }
+    boardRows = rows.slice(0, 10); shared = true; renderBoards();
+  }
+  async function submitPublic(name, score) {
+    const id = playerId(), url = await getStore();
+    let live = []; try { live = await readLive(); } catch (e) {}
+    let backup = []; if (!live.length) { try { backup = await readBackup(); } catch (e) {} }
+    const players = mergeRows(live, backup);
+    const prev = players.find(r => r.id === id);
+    let msg;
+    if (prev && prev.score >= score) { prev.name = name; prev.code = rowCode(prev); msg = `내 최고 기록 ${prev.score.toLocaleString()}점이 순위에 남아 있어요.`; }
+    else {
+      const rec = { id, name, score, char: lastResult.char, map: mapId, at: Date.now() }; rec.code = rowCode(rec);
+      if (prev) players.splice(players.indexOf(prev), 1);
+      players.push(rec); msg = prev ? `개인 최고 기록 갱신! (이전 ${prev.score.toLocaleString()})` : '모두의 순위에 등록했어요!';
     }
+    const out = mergeRows(players);
+    const r = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ players: out }) });
+    if (!r.ok) throw new Error('save ' + r.status);
+    const rank = out.findIndex(x => x.id === id) + 1;
+    boardRows = out.slice(0, 10); shared = true; renderBoards();
+    return rank ? `${msg} 지금 ${rank}위예요.` : msg;
   }
   async function initShared() {
     const cl = window.claude;
@@ -1556,15 +1602,14 @@ $('snd').addEventListener('click', (e) => {
     const note = $('saveNote');
     $('saveBtn').disabled = true;
     if (ghMode) {
-      saveLocal(name, lastResult.score); saved = true;
-      const data = { name, score: lastResult.score, char: lastResult.char, map: mapId };
-      data.code = ghSign(`${name}|${data.score}|${data.char}|${data.map}|${GH_SALT}`);
-      const body = '아래 내용을 고치지 말고 그대로 제출하면 1~2분 안에 모두의 순위에 올라가요.\n\n```json\n' + JSON.stringify(data) + '\n```\n';
-      const url = `https://github.com/${GH_REPO}/issues/new?title=${encodeURIComponent(`[score] ${name} ${data.score}`)}&body=${encodeURIComponent(body)}`;
-      const w = window.open(url, '_blank', 'noopener');
-      note.className = 'note ok'; note.textContent = '';
-      note.append('GitHub 창에서 "Create" 버튼을 누르면 1~2분 뒤 모두의 순위에 올라가요 (GitHub 계정 필요). ');
-      if (!w) { const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '창이 안 열리면 여기를 눌러요'; note.append(a); }
+      try {
+        note.textContent = '등록하는 중…'; note.className = 'note';
+        const msg = await submitPublic(name, lastResult.score);
+        saved = true; note.textContent = msg; note.className = 'note ok';
+      } catch (err) {
+        saveLocal(name, lastResult.score); saved = true;
+        note.textContent = '모두의 순위에 연결하지 못해서 이 기기에만 저장했어요.'; note.className = 'note err';
+      }
       return;
     }
     if (!shared) {
